@@ -1,0 +1,16 @@
+{
+  "name": "Darts App",
+  "short_name": "Darts",
+  "description": "Compteur de fléchettes",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "icons": [
+    {
+      "src": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Dartboard.svg/512px-Dartboard.svg.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
