@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <title>Darts App</title>
 
-    <!-- Manifest externe (à placer à côté de index.html dans le repo) -->
+    <!-- Manifest externe -->
     <link rel="manifest" href="manifest.json">
 
-    <!-- Balises plein écran iOS -->
+    <!-- iOS PWA -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -27,6 +27,13 @@
 
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- PeerJS pour le second écran (P2P, pas de backend) -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+
+    <!-- QR code generator -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+
     <script>
         tailwind.config = {
             theme: {
@@ -61,6 +68,7 @@
         .pulse { animation: pulseAnim 1.4s infinite; }
         @keyframes pulseAnim { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
         input { background: transparent; outline: none; border: none; color: white; width: 100%; font-size: 16px;}
+        .qr-canvas img { display: block; width: 100%; height: auto; }
     </style>
 </head>
 <body>
@@ -95,6 +103,197 @@
             return `${prefix}${suffix}`;
         }
 
+        function generateCode() {
+            return String(Math.floor(100000 + Math.random() * 900000));
+        }
+
+        function playerColor(idx) {
+            return PLAYER_COLORS[idx % PLAYER_COLORS.length];
+        }
+
+        // ============================================================
+        // VUE SPECTATEUR (PAYSAGE) — lit l'état envoyé par le host
+        // ============================================================
+        function SpectatorView({ state, onQuit, connStatus }) {
+            if (!state || state.gameState === 'setup') {
+                return (
+                    <div className="flex flex-col h-full w-full bg-bg items-center justify-center text-center p-6">
+                        <div className="text-7xl mb-6">📺</div>
+                        <div className="text-3xl md:text-5xl font-black tracking-widest mb-3">MODE SPECTATEUR</div>
+                        <div className="text-textMuted text-lg md:text-2xl mb-8">En attente du début de la partie…</div>
+                        <div className={`text-sm md:text-base mb-6 ${connStatus === 'connected' ? 'text-closed' : 'text-yellow-400'}`}>
+                            {connStatus === 'connected' ? '● Connecté à l\'écran principal' : '○ Connexion…'}
+                        </div>
+                        <button onClick={onQuit} className="py-3 px-6 rounded-xl bg-card border border-border text-white font-bold">← Quitter</button>
+                    </div>
+                );
+            }
+
+            if (state.winner) {
+                const winnerIdx = state.players.findIndex(p => p.id === state.winner.id);
+                return (
+                    <div className="flex flex-col h-full w-full bg-bg items-center justify-center text-center p-6">
+                        <div className="text-8xl md:text-9xl mb-6">🏆</div>
+                        <div className="text-4xl md:text-6xl font-black tracking-widest mb-4">VICTOIRE</div>
+                        <div className="text-6xl md:text-8xl font-black mb-8" style={{ color: playerColor(winnerIdx) }}>
+                            {state.winner.name}
+                        </div>
+                        <button onClick={onQuit} className="py-3 px-6 rounded-xl bg-card border border-border text-white font-bold">← Quitter</button>
+                    </div>
+                );
+            }
+
+            const { mode, players, scores, currentPlayerIndex, currentTurnDarts } = state;
+            const activeColor = playerColor(currentPlayerIndex);
+            const current = players[currentPlayerIndex];
+            const turnDartsLabel = currentTurnDarts.length === 0 ? '—' : currentTurnDarts.map(dartLabel).join('  ·  ');
+
+            // En-tête commun
+            const Header = () => (
+                <div className="flex items-center justify-between gap-4 px-6 py-3 flex-shrink-0" style={{ backgroundColor: activeColor }}>
+                    <div className="flex flex-col">
+                        <div className="text-xs md:text-sm font-bold tracking-widest text-black/55">MODE</div>
+                        <div className="text-xl md:text-3xl font-black text-bg">{mode === 'Cricket' ? 'CRICKET' : mode}</div>
+                    </div>
+                    <div className="flex-1 flex flex-col items-center min-w-0">
+                        <div className="text-xs md:text-sm font-bold tracking-widest text-black/55">AU TOUR DE</div>
+                        <div className="text-3xl md:text-5xl font-black text-bg truncate max-w-full leading-tight">{current.name.toUpperCase()}</div>
+                        <div className="flex gap-2 mt-1">
+                            {[1, 2, 3].map(d => (
+                                <div key={d} className={`w-4 h-4 md:w-5 md:h-5 rounded-full ${currentTurnDarts.length >= d ? 'bg-bg' : 'bg-black/25'}`}></div>
+                            ))}
+                        </div>
+                        <div className="text-sm md:text-lg font-bold text-black/75 mt-1">{turnDartsLabel}</div>
+                    </div>
+                    <button onClick={onQuit} className="bg-black/25 px-3 py-2 rounded-xl text-xs md:text-sm font-bold tracking-wider text-white">← Quitter</button>
+                </div>
+            );
+
+            if (mode === 'Cricket') {
+                // Layout : 3 colonnes (joueurs gauche | grille centrale | joueurs droite)
+                const leftCount = Math.floor(players.length / 2);
+                const leftPlayers = players.slice(0, leftCount);
+                const rightPlayers = players.slice(leftCount);
+                const rightStartIdx = leftCount;
+
+                const PlayerCard = ({ p, idx }) => {
+                    const isActive = idx === currentPlayerIndex;
+                    const color = playerColor(idx);
+                    const closed = CRICKET_NUMBERS.filter(n => (scores[p.id]?.marks[n] || 0) >= 3).length;
+                    return (
+                        <div className={`rounded-2xl flex flex-col items-center py-3 px-3 border-2 transition-all ${isActive ? 'pulse' : ''}`}
+                             style={{ backgroundColor: isActive ? hexToRgba(color, 0.15) : '#1e293b', borderColor: isActive ? color : '#334155' }}>
+                            <div className="px-2 py-0.5 rounded-md mb-1 text-xs font-black text-white" style={{ backgroundColor: color }}>J{idx + 1}</div>
+                            <div className="text-base md:text-lg font-bold truncate w-full text-center px-1" style={{ color: isActive ? color : '#94a3b8' }}>{p.name}</div>
+                            <div className="text-4xl md:text-6xl font-black mt-1" style={{ color: isActive ? color : 'white' }}>{scores[p.id].total}</div>
+                            <div className="text-xs md:text-sm text-textMuted mt-1">{closed}/7 fermés</div>
+                        </div>
+                    );
+                };
+
+                return (
+                    <div className="flex flex-col h-full w-full bg-bg border-4" style={{ borderColor: activeColor }}>
+                        <Header />
+                        <div className="flex-1 flex gap-3 p-3 overflow-hidden">
+                            {/* Colonne gauche */}
+                            <div className="flex flex-col gap-2 w-48 md:w-60 flex-shrink-0">
+                                {leftPlayers.map((p, i) => <PlayerCard key={p.id} p={p} idx={i} />)}
+                            </div>
+
+                            {/* Grille Cricket centrale */}
+                            <div className="flex-1 bg-card rounded-2xl border border-border p-3 flex flex-col overflow-hidden">
+                                <div className="flex-1 flex flex-col gap-1.5">
+                                    {CRICKET_NUMBERS.map(num => {
+                                        const closedByAll = players.every(p => scores[p.id].marks[num] >= 3);
+                                        return (
+                                            <div key={num} className="flex-1 flex items-center justify-around py-2 px-3 rounded-xl border-2 min-h-[50px]"
+                                                 style={{ backgroundColor: closedByAll ? 'rgba(100,116,139,0.06)' : 'rgba(15,23,42,0.5)', borderColor: '#334155', opacity: closedByAll ? 0.4 : 1 }}>
+                                                <div className="flex items-center gap-2 flex-1 justify-center">
+                                                    {players.map((p, idx) => {
+                                                        const marks = scores[p.id].marks[num];
+                                                        const color = playerColor(idx);
+                                                        return (
+                                                            <div key={p.id} className="flex flex-col items-center gap-0.5 w-10 md:w-14">
+                                                                <div className="text-[9px] md:text-xs font-black" style={{ color }}>J{idx + 1}</div>
+                                                                <div className="flex flex-col gap-0.5 w-full items-center">
+                                                                    {[1, 2, 3].map(i => (
+                                                                        <div key={i}
+                                                                             style={{ backgroundColor: marks >= i ? (marks >= 3 ? '#10B981' : color) : '#334155' }}
+                                                                             className="w-full h-1.5 rounded-full"></div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                                <div className="w-14 h-14 md:w-20 md:h-20 rounded-full flex items-center justify-center border-2 flex-shrink-0"
+                                                     style={{ backgroundColor: '#020617', borderColor: closedByAll ? '#475569' : '#334155' }}>
+                                                    <span className="font-bold text-2xl md:text-4xl" style={{ color: closedByAll ? '#94a3b8' : 'white', textDecoration: closedByAll ? 'line-through' : 'none' }}>{num === 25 ? 'B' : num}</span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* Colonne droite */}
+                            <div className="flex flex-col gap-2 w-48 md:w-60 flex-shrink-0">
+                                {rightPlayers.map((p, i) => <PlayerCard key={p.id} p={p} idx={rightStartIdx + i} />)}
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // === X01 ===
+            return (
+                <div className="flex flex-col h-full w-full bg-bg border-4" style={{ borderColor: activeColor }}>
+                    <Header />
+                    <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
+                        <div className="flex-1 flex gap-3 items-stretch overflow-x-auto hide-scroll">
+                            {players.map((p, idx) => {
+                                const isActive = idx === currentPlayerIndex;
+                                const color = playerColor(idx);
+                                return (
+                                    <div key={p.id} className={`flex-1 min-w-[180px] rounded-2xl flex flex-col items-center justify-center py-6 px-4 border-2 transition-all ${isActive ? 'pulse' : ''}`}
+                                         style={{ backgroundColor: isActive ? hexToRgba(color, 0.15) : '#1e293b', borderColor: isActive ? color : '#334155' }}>
+                                        <div className="px-3 py-1 rounded-md mb-2 text-sm font-black text-white" style={{ backgroundColor: color }}>J{idx + 1}</div>
+                                        <div className="text-xl md:text-2xl font-bold truncate w-full text-center px-1" style={{ color: isActive ? color : '#94a3b8' }}>{p.name}</div>
+                                        <div className="text-7xl md:text-9xl font-black mt-3" style={{ color: isActive ? color : 'white' }}>{scores[p.id].total}</div>
+                                        {isActive && (
+                                            <div className="flex gap-2 mt-4">
+                                                {[1, 2, 3].map(d => (
+                                                    <div key={d} className={`w-3 h-3 md:w-4 md:h-4 rounded-full`} style={{ backgroundColor: currentTurnDarts.length >= d ? color : '#334155' }}></div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // ============================================================
+        // QR CODE helper
+        // ============================================================
+        function QRBlock({ text }) {
+            const ref = useRef(null);
+            useEffect(() => {
+                if (!ref.current || !window.qrcode) return;
+                const qr = window.qrcode(0, 'M');
+                qr.addData(text);
+                qr.make();
+                ref.current.innerHTML = qr.createImgTag(6, 8);
+            }, [text]);
+            return <div ref={ref} className="qr-canvas bg-white p-2 rounded-xl inline-block"></div>;
+        }
+
+        // ============================================================
+        // APP PRINCIPALE
+        // ============================================================
         function DartsApp() {
             const [windowWidth, setWindowWidth] = useState(window.innerWidth);
             const [windowHeight, setWindowHeight] = useState(window.innerHeight);
@@ -110,6 +309,151 @@
 
             const isTablet = windowWidth >= 768;
 
+            // ===== MODE SPECTATEUR (auto via ?spectator=XXXXXX ou bouton) =====
+            const [appMode, setAppMode] = useState('main'); // 'main' | 'spectator'
+            const [spectatorState, setSpectatorState] = useState(null);
+            const [spectatorConn, setSpectatorConn] = useState('idle'); // idle | connecting | connected | disconnected
+            const [spectatorCodeInput, setSpectatorCodeInput] = useState('');
+            const [spectatorEntryError, setSpectatorEntryError] = useState('');
+            const specPeerRef = useRef(null);
+            const specConnRef = useRef(null);
+            const specReconnectRef = useRef(null);
+            const specCodeRef = useRef(null);
+
+            // Auto-spectator depuis URL
+            useEffect(() => {
+                const params = new URLSearchParams(window.location.search);
+                const code = params.get('spectator');
+                if (code && /^\d{6}$/.test(code)) {
+                    setAppMode('spectator');
+                    startSpectator(code);
+                }
+                // eslint-disable-next-line
+            }, []);
+
+            function startSpectator(code) {
+                specCodeRef.current = code;
+                setSpectatorConn('connecting');
+                setSpectatorEntryError('');
+                try {
+                    if (specPeerRef.current) { specPeerRef.current.destroy(); specPeerRef.current = null; }
+                    const peer = new Peer();
+                    specPeerRef.current = peer;
+                    peer.on('open', () => {
+                        const conn = peer.connect('darts-app-' + code, { reliable: true });
+                        specConnRef.current = conn;
+                        conn.on('open', () => {
+                            setSpectatorConn('connected');
+                        });
+                        conn.on('data', (data) => {
+                            if (data && data.type === 'state') setSpectatorState(data.payload);
+                        });
+                        conn.on('close', () => {
+                            setSpectatorConn('disconnected');
+                            scheduleSpecReconnect();
+                        });
+                        conn.on('error', () => {
+                            setSpectatorConn('disconnected');
+                            scheduleSpecReconnect();
+                        });
+                    });
+                    peer.on('error', (err) => {
+                        console.warn('Spectator peer error', err);
+                        setSpectatorConn('disconnected');
+                        if (err && err.type === 'peer-unavailable') {
+                            setSpectatorEntryError('Code introuvable. Vérifie le code sur l\'écran principal.');
+                        }
+                        scheduleSpecReconnect();
+                    });
+                } catch (e) {
+                    setSpectatorConn('disconnected');
+                    scheduleSpecReconnect();
+                }
+            }
+
+            function scheduleSpecReconnect() {
+                if (specReconnectRef.current) clearTimeout(specReconnectRef.current);
+                specReconnectRef.current = setTimeout(() => {
+                    if (appMode === 'spectator' && specCodeRef.current && spectatorConn !== 'connected') {
+                        startSpectator(specCodeRef.current);
+                    }
+                }, 3000);
+            }
+
+            function quitSpectator() {
+                if (specReconnectRef.current) { clearTimeout(specReconnectRef.current); specReconnectRef.current = null; }
+                if (specConnRef.current) { try { specConnRef.current.close(); } catch(e){} specConnRef.current = null; }
+                if (specPeerRef.current) { try { specPeerRef.current.destroy(); } catch(e){} specPeerRef.current = null; }
+                specCodeRef.current = null;
+                setSpectatorState(null);
+                setSpectatorConn('idle');
+                setAppMode('main');
+                // Retire ?spectator de l'URL pour la prochaine fois
+                const url = new URL(window.location.href);
+                url.searchParams.delete('spectator');
+                window.history.replaceState({}, '', url.toString());
+            }
+
+            // ===== HOST (second écran) =====
+            const [hostMode, setHostMode] = useState('off'); // off | starting | waiting | connected
+            const [hostCode, setHostCode] = useState(null);
+            const [showHostModal, setShowHostModal] = useState(false);
+            const hostPeerRef = useRef(null);
+            const hostConnRef = useRef(null);
+
+            function startHost(retry = 0) {
+                if (retry > 5) {
+                    setHostMode('off');
+                    window.alert('Impossible de créer le code, réessaye.');
+                    return;
+                }
+                setHostMode('starting');
+                const code = generateCode();
+                try {
+                    if (hostPeerRef.current) { try { hostPeerRef.current.destroy(); } catch(e){} hostPeerRef.current = null; }
+                    const peer = new Peer('darts-app-' + code);
+                    hostPeerRef.current = peer;
+                    peer.on('open', () => {
+                        setHostCode(code);
+                        setHostMode('waiting');
+                    });
+                    peer.on('connection', (conn) => {
+                        hostConnRef.current = conn;
+                        conn.on('open', () => {
+                            setHostMode('connected');
+                            // Envoie l'état courant immédiatement
+                            sendFullState(conn);
+                        });
+                        conn.on('close', () => {
+                            setHostMode('waiting');
+                            hostConnRef.current = null;
+                        });
+                        conn.on('error', () => {
+                            setHostMode('waiting');
+                            hostConnRef.current = null;
+                        });
+                    });
+                    peer.on('error', (err) => {
+                        if (err && err.type === 'unavailable-id') {
+                            startHost(retry + 1);
+                        } else {
+                            console.warn('Host peer error', err);
+                        }
+                    });
+                } catch (e) {
+                    startHost(retry + 1);
+                }
+            }
+
+            function stopHost() {
+                if (hostConnRef.current) { try { hostConnRef.current.close(); } catch(e){} hostConnRef.current = null; }
+                if (hostPeerRef.current) { try { hostPeerRef.current.destroy(); } catch(e){} hostPeerRef.current = null; }
+                setHostMode('off');
+                setHostCode(null);
+                setShowHostModal(false);
+            }
+
+            // ============= ÉTAT DU JEU =============
             const [gameState, setGameState] = useState('setup');
             const [mode, setMode] = useState('Cricket');
             const [doubleOut, setDoubleOut] = useState(true);
@@ -119,18 +463,37 @@
             ]);
             const [scores, setScores] = useState({});
             const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0);
-            const [currentTurnDarts, setCurrentTurnDarts] = useState([]); // [{value, multiplier}]
-            const [turnHistory, setTurnHistory] = useState([]); // [{playerIdx, darts:[{value,multiplier}]}]
+            const [currentTurnDarts, setCurrentTurnDarts] = useState([]);
+            const [turnHistory, setTurnHistory] = useState([]);
             const [history, setHistory] = useState([]);
             const [redoStack, setRedoStack] = useState([]);
             const [multiplier, setMultiplier] = useState(1);
             const [winner, setWinner] = useState(null);
             const [showStats, setShowStats] = useState(false);
 
-            const playerColor = (idx) => PLAYER_COLORS[idx % PLAYER_COLORS.length];
             const activeColor = playerColor(currentPlayerIndex);
-
             const scoreboardRef = useRef(null);
+
+            // Envoi de l'état au spectateur quand quelque chose change
+            function sendFullState(conn) {
+                const c = conn || hostConnRef.current;
+                if (!c || c.open === false) return;
+                try {
+                    c.send({
+                        type: 'state',
+                        payload: {
+                            gameState, mode, doubleOut, players, scores,
+                            currentPlayerIndex, currentTurnDarts, multiplier, winner, turnHistory,
+                        },
+                    });
+                } catch (e) { /* noop */ }
+            }
+
+            useEffect(() => {
+                if (hostMode !== 'connected') return;
+                sendFullState();
+                // eslint-disable-next-line
+            }, [gameState, mode, doubleOut, players, scores, currentPlayerIndex, currentTurnDarts, multiplier, winner, turnHistory, hostMode]);
 
             useEffect(() => {
                 if (!scoreboardRef.current || gameState !== 'playing') return;
@@ -235,7 +598,6 @@
                 const newTurnDarts = [...currentTurnDarts, dartObj];
 
                 if (mode === 'Cricket') {
-                    // Cut-throat : marques jusqu'à 3, puis malus aux adversaires non-fermés
                     if (value !== 0 && CRICKET_NUMBERS.includes(value)) {
                         for (let i = 0; i < m; i++) {
                             if (pData.marks[value] < 3) {
@@ -250,7 +612,6 @@
                         }
                         newScores[pId] = pData;
 
-                        // Victoire : tous fermés + score le plus bas
                         const allClosed = CRICKET_NUMBERS.every(n => pData.marks[n] >= 3);
                         if (allClosed) {
                             const oppTotals = players.filter(p => p.id !== pId).map(p => newScores[p.id].total);
@@ -267,7 +628,6 @@
                         }
                     }
                 } else {
-                    // 301 / 501 / 701
                     const newTotal = pData.total - (value * m);
                     if (newTotal === 0) {
                         if (doubleOut && m !== 2) {
@@ -275,7 +635,6 @@
                             finalizeTurnReverted(snapshot.scores, newTurnDarts);
                             return;
                         }
-                        // Victoire
                         pData.total = 0;
                         newScores[pId] = pData;
                         pushHistory(snapshot);
@@ -303,7 +662,6 @@
                 if (newTurnDarts.length === 3) finalizeTurn(newScores, newTurnDarts);
             };
 
-            // Tour normal terminé : on enregistre les fléchettes pour les stats puis on passe au joueur suivant
             const finalizeTurn = (scoresToKeep, dartsToLog) => {
                 setTurnHistory(h => [...h, { playerIdx: currentPlayerIndex, darts: dartsToLog }]);
                 setTimeout(() => {
@@ -314,7 +672,6 @@
                 }, 900);
             };
 
-            // Bust : on garde les fléchettes pour les stats mais on rétablit le score d'avant le tour
             const finalizeTurnReverted = (scoresBefore, dartsThisTurn) => {
                 setTurnHistory(h => [...h, { playerIdx: currentPlayerIndex, darts: dartsThisTurn }]);
                 setScores(scoresBefore);
@@ -343,13 +700,10 @@
             const computeStats = () => {
                 return players.map((p, pidx) => {
                     const playerTurns = turnHistory.filter(t => t.playerIdx === pidx);
-                    const liveCurrent = (pidx === currentPlayerIndex && currentTurnDarts.length > 0 && !turnHistory.find(t => t.playerIdx === pidx && t.darts === currentTurnDarts))
-                        ? [{ playerIdx: pidx, darts: [...currentTurnDarts] }]
-                        : [];
-                    // pour éviter doublon quand un tour vient d'être loggé, on déduplique simplement par référence
                     const allTurns = [...playerTurns];
-                    if (liveCurrent.length > 0 && !playerTurns.some(t => t.darts.length === currentTurnDarts.length && t.darts.every((d, i) => d === currentTurnDarts[i]))) {
-                        allTurns.push(liveCurrent[0]);
+                    if (pidx === currentPlayerIndex && currentTurnDarts.length > 0 &&
+                        !playerTurns.some(t => t.darts.length === currentTurnDarts.length && t.darts.every((d, i) => d === currentTurnDarts[i]))) {
+                        allTurns.push({ playerIdx: pidx, darts: [...currentTurnDarts] });
                     }
                     const allDarts = allTurns.flatMap(t => t.darts);
                     const dartCount = allDarts.length;
@@ -361,10 +715,7 @@
                         return {
                             name: p.name,
                             color: playerColor(pidx),
-                            dartCount,
-                            totalMarks,
-                            closedCount,
-                            malusReceived,
+                            dartCount, totalMarks, closedCount, malusReceived,
                             avgMarksPerDart: dartCount > 0 ? (totalMarks / dartCount).toFixed(2) : '0.00',
                         };
                     } else {
@@ -379,16 +730,9 @@
                         const count140 = turnScores.filter(s => s >= 140 && s < 180).length;
                         const count100 = turnScores.filter(s => s >= 100 && s < 140).length;
                         return {
-                            name: p.name,
-                            color: playerColor(pidx),
-                            dartCount,
-                            pointsScored,
-                            avgPerDart,
-                            avgPerTurn,
-                            highestTurn,
-                            count180,
-                            count140,
-                            count100,
+                            name: p.name, color: playerColor(pidx),
+                            dartCount, pointsScored, avgPerDart, avgPerTurn, highestTurn,
+                            count180, count140, count100,
                         };
                     }
                 });
@@ -438,6 +782,53 @@
                 );
             };
 
+            // ============== HOST MODAL ==============
+            const HostModal = () => {
+                if (!showHostModal) return null;
+                const baseUrl = window.location.origin + window.location.pathname;
+                const fullUrl = hostCode ? `${baseUrl}?spectator=${hostCode}` : '';
+                return (
+                    <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-3"
+                         onClick={() => setShowHostModal(false)}>
+                        <div className="bg-card rounded-2xl border-2 border-border max-w-md w-full p-5"
+                             onClick={(e) => e.stopPropagation()}
+                             style={{ paddingTop: 'max(env(safe-area-inset-top), 1rem)', paddingBottom: 'max(env(safe-area-inset-bottom), 1rem)' }}>
+                            <div className="flex justify-between items-center mb-4">
+                                <h2 className="text-lg md:text-xl font-black tracking-widest">📺 SECOND ÉCRAN</h2>
+                                <button onClick={() => setShowHostModal(false)}
+                                        className="w-9 h-9 rounded-full bg-bg flex items-center justify-center text-lg font-bold">✕</button>
+                            </div>
+
+                            {hostMode === 'starting' && (
+                                <div className="text-center py-8 text-textMuted">Création du code…</div>
+                            )}
+
+                            {(hostMode === 'waiting' || hostMode === 'connected') && hostCode && (
+                                <React.Fragment>
+                                    <p className="text-textMuted text-sm mb-3">Sur l'autre appareil, ouvre le même site puis entre ce code :</p>
+                                    <div className="bg-bg rounded-2xl border-2 border-border py-4 mb-4 text-center">
+                                        <div className="text-5xl md:text-6xl font-black tracking-widest" style={{ color: PLAYER_COLORS[0] }}>
+                                            {hostCode}
+                                        </div>
+                                    </div>
+                                    <p className="text-textMuted text-xs mb-2 text-center">…ou scanne ce QR code :</p>
+                                    <div className="flex justify-center mb-4">
+                                        <QRBlock text={fullUrl} />
+                                    </div>
+                                    <div className={`text-center font-bold text-sm mb-3 ${hostMode === 'connected' ? 'text-closed' : 'text-yellow-400'}`}>
+                                        {hostMode === 'connected' ? '● Spectateur connecté' : '○ En attente de connexion…'}
+                                    </div>
+                                    <button onClick={stopHost}
+                                            className="w-full py-3 rounded-xl bg-red-600/80 text-white font-bold">
+                                        Arrêter le second écran
+                                    </button>
+                                </React.Fragment>
+                            )}
+                        </div>
+                    </div>
+                );
+            };
+
             const MarkIndicator = ({ count, color, dimmed }) => (
                 <div className={`flex flex-col gap-0.5 md:gap-1 w-8 md:w-16 items-center ${dimmed ? 'opacity-35' : ''}`}>
                     {[1, 2, 3].map(i => (
@@ -448,14 +839,62 @@
                 </div>
             );
 
+            // ==================== ROUTAGE SPECTATEUR ====================
+            if (appMode === 'spectator') {
+                if (spectatorConn === 'idle' && !specCodeRef.current) {
+                    // Écran d'entrée du code
+                    return (
+                        <div className="flex flex-col h-full w-full bg-bg text-white items-center justify-center p-6">
+                            <div className="text-7xl mb-4">📺</div>
+                            <h1 className="text-3xl md:text-5xl font-black tracking-widest text-center mb-2" style={{ color: PLAYER_COLORS[0] }}>MODE SPECTATEUR</h1>
+                            <p className="text-textMuted text-center mb-8">Entre le code à 6 chiffres affiché sur l'écran principal.</p>
+                            <input type="tel" inputMode="numeric" pattern="[0-9]*" maxLength="6"
+                                   value={spectatorCodeInput} onChange={(e) => setSpectatorCodeInput(e.target.value.replace(/\D/g,''))}
+                                   placeholder="000000"
+                                   className="bg-card border-2 border-border rounded-2xl text-4xl md:text-6xl font-black text-center tracking-widest w-64 md:w-80 py-4 mb-4" />
+                            {spectatorEntryError && <div className="text-red-400 text-sm mb-3">{spectatorEntryError}</div>}
+                            <button disabled={spectatorCodeInput.length !== 6}
+                                    onClick={() => startSpectator(spectatorCodeInput)}
+                                    className={`py-4 px-8 rounded-2xl font-black text-lg tracking-widest text-white ${spectatorCodeInput.length === 6 ? '' : 'opacity-40'}`}
+                                    style={{ backgroundColor: PLAYER_COLORS[0] }}>
+                                SE CONNECTER
+                            </button>
+                            <button onClick={quitSpectator} className="mt-6 text-textMuted text-sm underline">← Retour à l'écran principal</button>
+                        </div>
+                    );
+                }
+                return <SpectatorView state={spectatorState} onQuit={quitSpectator} connStatus={spectatorConn} />;
+            }
+
             // ==================== ÉCRAN SETUP ====================
             if (gameState === 'setup') {
                 return (
+                    <React.Fragment>
                     <div className="flex flex-col h-full w-full bg-bg text-white overflow-y-auto px-4 md:px-16 pt-[max(env(safe-area-inset-top),2rem)] pb-[max(env(safe-area-inset-bottom),2rem)]">
                         <h1 className="text-5xl md:text-7xl font-black text-center tracking-widest" style={{ color: PLAYER_COLORS[0] }}>DARTS</h1>
-                        <p className="text-textMuted text-center text-sm md:text-lg mb-8 tracking-widest mt-2">Compteur de fléchettes</p>
+                        <p className="text-textMuted text-center text-sm md:text-lg mb-6 tracking-widest mt-2">Compteur de fléchettes</p>
 
-                        <h2 className="text-sm md:text-base font-bold tracking-widest mb-3 mt-4 text-white">MODE DE JEU</h2>
+                        {/* Boutons second écran */}
+                        <div className="grid grid-cols-2 gap-3 mb-6">
+                            <button onClick={() => { if (hostMode === 'off') startHost(); setShowHostModal(true); }}
+                                    className="p-3 rounded-2xl border-2 border-border bg-card text-left flex items-center gap-3">
+                                <span className="text-2xl">📺</span>
+                                <div>
+                                    <div className="font-bold text-sm md:text-base">Second écran</div>
+                                    <div className="text-[10px] md:text-xs text-textMuted">{hostMode === 'connected' ? '● Connecté' : hostMode === 'waiting' ? '○ Code prêt' : 'Diffuser sur tablette/TV'}</div>
+                                </div>
+                            </button>
+                            <button onClick={() => { setAppMode('spectator'); setSpectatorConn('idle'); }}
+                                    className="p-3 rounded-2xl border-2 border-border bg-card text-left flex items-center gap-3">
+                                <span className="text-2xl">👁</span>
+                                <div>
+                                    <div className="font-bold text-sm md:text-base">Mode spectateur</div>
+                                    <div className="text-[10px] md:text-xs text-textMuted">Rejoindre un écran principal</div>
+                                </div>
+                            </button>
+                        </div>
+
+                        <h2 className="text-sm md:text-base font-bold tracking-widest mb-3 mt-2 text-white">MODE DE JEU</h2>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                             {MODES.map(m => (
                                 <button key={m.id} onClick={() => setMode(m.id)}
@@ -466,7 +905,6 @@
                             ))}
                         </div>
 
-                        {/* Option Double-Out (uniquement pour 301/501/701) */}
                         {mode !== 'Cricket' && (
                             <button onClick={() => setDoubleOut(!doubleOut)}
                                     className={`p-4 rounded-2xl border-2 flex items-center mb-2 transition-colors ${doubleOut ? 'bg-double/15 border-double' : 'bg-card border-border'}`}>
@@ -509,6 +947,8 @@
                             JOUER
                         </button>
                     </div>
+                    <HostModal />
+                    </React.Fragment>
                 );
             }
 
@@ -540,6 +980,7 @@
                             </div>
                         </div>
                         <StatsModal />
+                        <HostModal />
                     </React.Fragment>
                 );
             }
@@ -548,7 +989,6 @@
             const keypadNumbers = mode === 'Cricket' ? CRICKET_NUMBERS : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 25];
             const currentPlayerId = players[currentPlayerIndex].id;
 
-            // Split équilibré pour Cricket : moitié gauche / moitié droite
             const leftCount = Math.floor(players.length / 2);
             const leftPlayers = players.slice(0, leftCount);
             const rightPlayers = players.slice(leftCount);
@@ -563,6 +1003,10 @@
                         <div className="flex gap-1 flex-shrink-0">
                             <button onClick={resetGame} className="bg-black/25 px-2 py-1.5 md:px-3 md:py-2 rounded-xl text-[10px] md:text-sm font-bold tracking-wider text-white">RESET</button>
                             <button onClick={() => setShowStats(true)} className="bg-black/25 px-2 py-1.5 md:px-3 md:py-2 rounded-xl text-[10px] md:text-sm font-bold tracking-wider text-white">STATS</button>
+                            <button onClick={() => { if (hostMode === 'off') startHost(); setShowHostModal(true); }}
+                                    className="bg-black/25 px-2 py-1.5 md:px-3 md:py-2 rounded-xl text-[10px] md:text-sm font-bold tracking-wider text-white">
+                                📺{hostMode === 'connected' ? '●' : ''}
+                            </button>
                         </div>
                         <div className="flex-1 flex flex-col items-center min-w-0 px-1">
                             <div className="text-[9px] md:text-xs font-bold tracking-widest text-black/55">AU TOUR DE</div>
@@ -580,7 +1024,7 @@
                         </div>
                     </div>
 
-                    {/* SCOREBOARD SCROLL */}
+                    {/* SCOREBOARD */}
                     <div className="bg-panel py-1.5 md:py-3 overflow-x-auto hide-scroll flex-shrink-0" ref={scoreboardRef}>
                         <div className="flex px-2 gap-2 w-max mx-auto">
                             {players.map((p, idx) => {
@@ -603,9 +1047,7 @@
                         {mode === 'Cricket' && (
                             <div className="bg-card rounded-2xl px-2 py-2 md:px-4 md:py-3 border border-border w-full max-w-3xl h-full flex flex-col overflow-x-auto hide-scroll">
 
-                                {/* En-tête des colonnes joueurs : numéro J# au-dessus de chaque colonne */}
                                 <div className="flex items-center justify-center flex-shrink-0 mb-1">
-                                    {/* Spacer gauche pour le statut (symétrie) */}
                                     <div className="w-[18px] md:w-[26px] flex-shrink-0"></div>
                                     {leftPlayers.map((p, i) => (
                                         <div key={`h-${p.id}`} className="w-9 md:w-20 py-0.5 mx-0.5 rounded text-center text-[8px] md:text-xs font-black"
@@ -613,7 +1055,6 @@
                                             J{i + 1}
                                         </div>
                                     ))}
-                                    {/* Placeholder central de la même largeur que le cercle des numéros */}
                                     <div className="w-9 h-6 md:w-14 md:h-7 mx-1 md:mx-3 flex-shrink-0"></div>
                                     {rightPlayers.map((p, i) => {
                                         const realIdx = rightStartIdx + i;
@@ -627,7 +1068,6 @@
                                     <div className="w-[18px] md:w-[26px] flex-shrink-0"></div>
                                 </div>
 
-                                {/* 7 lignes (20, 19, 18, 17, 16, 15, B) — réparties verticalement */}
                                 <div className="flex-1 flex flex-col justify-between gap-1">
                                     {CRICKET_NUMBERS.map(num => {
                                         const closedByAll = players.every(p => scores[p.id].marks[num] >= 3);
@@ -647,7 +1087,6 @@
                                             <div key={num} className="flex-1 flex items-center justify-center py-1 px-1 rounded-xl border-[1.5px] min-h-[34px]"
                                                  style={{ backgroundColor: rowBg, borderColor: rowBorder, opacity: rowOpacity }}>
 
-                                                {/* Statut gauche */}
                                                 <div className="w-[18px] md:w-[26px] flex justify-center flex-shrink-0">
                                                     {statusLabel && (
                                                         <div className="w-[16px] h-[16px] md:w-[22px] md:h-[22px] rounded-full flex items-center justify-center text-white text-[10px] md:text-xs font-black"
@@ -655,20 +1094,17 @@
                                                     )}
                                                 </div>
 
-                                                {/* Joueurs gauche */}
                                                 {leftPlayers.map((p, i) => (
                                                     <div key={`l-${p.id}`} className="w-9 md:w-20 mx-0.5 flex justify-center">
                                                         <MarkIndicator count={scores[p.id].marks[num]} color={playerColor(i)} dimmed={closedByAll} />
                                                     </div>
                                                 ))}
 
-                                                {/* Numéro central */}
                                                 <div className="w-9 h-9 md:w-14 md:h-14 rounded-full flex items-center justify-center border-2 mx-1 md:mx-3 flex-shrink-0 select-none"
                                                      style={{ backgroundColor: numBgColor, borderColor: numBorder }}>
                                                     <span className="font-bold text-sm md:text-xl" style={{ color: numColor, textDecoration: strike }}>{num === 25 ? 'B' : num}</span>
                                                 </div>
 
-                                                {/* Joueurs droite */}
                                                 {rightPlayers.map((p, i) => {
                                                     const realIdx = rightStartIdx + i;
                                                     return (
@@ -678,7 +1114,6 @@
                                                     );
                                                 })}
 
-                                                {/* Spacer droite pour symétrie */}
                                                 <div className="w-[18px] md:w-[26px] flex-shrink-0"></div>
                                             </div>
                                         );
@@ -720,6 +1155,7 @@
                     </div>
                 </div>
                 <StatsModal />
+                <HostModal />
                 </React.Fragment>
             );
         }
