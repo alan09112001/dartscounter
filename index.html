@@ -114,16 +114,22 @@
         // ============================================================
         // VUE SPECTATEUR (PAYSAGE) — lit l'état envoyé par le host
         // ============================================================
-        function SpectatorView({ state, onQuit, connStatus }) {
+        function SpectatorView({ state, onQuit, connStatus, debug }) {
             if (!state || state.gameState === 'setup') {
                 return (
                     <div className="flex flex-col h-full w-full bg-bg items-center justify-center text-center p-6">
                         <div className="text-7xl mb-6">📺</div>
                         <div className="text-3xl md:text-5xl font-black tracking-widest mb-3">MODE SPECTATEUR</div>
-                        <div className="text-textMuted text-lg md:text-2xl mb-8">En attente du début de la partie…</div>
-                        <div className={`text-sm md:text-base mb-6 ${connStatus === 'connected' ? 'text-closed' : 'text-yellow-400'}`}>
+                        <div className="text-textMuted text-lg md:text-2xl mb-4">En attente du début de la partie…</div>
+                        <div className={`text-sm md:text-base mb-3 ${connStatus === 'connected' ? 'text-closed' : 'text-yellow-400'}`}>
                             {connStatus === 'connected' ? '● Connecté à l\'écran principal' : '○ Connexion…'}
                         </div>
+                        {debug && (
+                            <div className="bg-card border border-border rounded-xl px-4 py-3 mb-6 max-w-md text-xs md:text-sm text-textMuted">
+                                <div className="font-bold text-white mb-1">Debug :</div>
+                                {debug}
+                            </div>
+                        )}
                         <button onClick={onQuit} className="py-3 px-6 rounded-xl bg-card border border-border text-white font-bold">← Quitter</button>
                     </div>
                 );
@@ -315,10 +321,24 @@
             const [spectatorConn, setSpectatorConn] = useState('idle'); // idle | connecting | connected | disconnected
             const [spectatorCodeInput, setSpectatorCodeInput] = useState('');
             const [spectatorEntryError, setSpectatorEntryError] = useState('');
+            const [spectatorDebug, setSpectatorDebug] = useState('');
+            const [hostDebug, setHostDebug] = useState('');
             const specPeerRef = useRef(null);
             const specConnRef = useRef(null);
             const specReconnectRef = useRef(null);
             const specCodeRef = useRef(null);
+
+            const PEER_CONFIG = {
+                debug: 1,
+                config: {
+                    'iceServers': [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' },
+                        { urls: 'stun:global.stun.twilio.com:3478' }
+                    ]
+                }
+            };
 
             // Auto-spectator depuis URL
             useEffect(() => {
@@ -335,37 +355,49 @@
                 specCodeRef.current = code;
                 setSpectatorConn('connecting');
                 setSpectatorEntryError('');
+                setSpectatorDebug('1. Création du peer...');
                 try {
                     if (specPeerRef.current) { specPeerRef.current.destroy(); specPeerRef.current = null; }
-                    const peer = new Peer();
+                    const peer = new Peer(undefined, PEER_CONFIG);
                     specPeerRef.current = peer;
-                    peer.on('open', () => {
+                    setSpectatorDebug('2. Connexion au serveur PeerJS...');
+                    peer.on('open', (id) => {
+                        setSpectatorDebug(`3. Peer OK (${id.slice(0,6)}…). Recherche de darts-app-${code}…`);
                         const conn = peer.connect('darts-app-' + code, { reliable: true });
                         specConnRef.current = conn;
                         conn.on('open', () => {
+                            setSpectatorDebug('4. Connecté !');
                             setSpectatorConn('connected');
                         });
                         conn.on('data', (data) => {
                             if (data && data.type === 'state') setSpectatorState(data.payload);
                         });
                         conn.on('close', () => {
+                            setSpectatorDebug('Connexion fermée par l\'hôte');
                             setSpectatorConn('disconnected');
                             scheduleSpecReconnect();
                         });
-                        conn.on('error', () => {
+                        conn.on('error', (err) => {
+                            setSpectatorDebug(`Erreur conn: ${err && (err.type || err.message) || 'inconnue'}`);
                             setSpectatorConn('disconnected');
                             scheduleSpecReconnect();
                         });
                     });
                     peer.on('error', (err) => {
                         console.warn('Spectator peer error', err);
+                        const t = err && (err.type || err.message) || 'inconnue';
+                        setSpectatorDebug(`Erreur peer: ${t}`);
                         setSpectatorConn('disconnected');
                         if (err && err.type === 'peer-unavailable') {
                             setSpectatorEntryError('Code introuvable. Vérifie le code sur l\'écran principal.');
                         }
                         scheduleSpecReconnect();
                     });
+                    peer.on('disconnected', () => {
+                        setSpectatorDebug('Déconnecté du serveur PeerJS');
+                    });
                 } catch (e) {
+                    setSpectatorDebug(`Exception: ${e.message}`);
                     setSpectatorConn('disconnected');
                     scheduleSpecReconnect();
                 }
@@ -404,43 +436,57 @@
             function startHost(retry = 0) {
                 if (retry > 5) {
                     setHostMode('off');
+                    setHostDebug('Échec après 5 tentatives');
                     window.alert('Impossible de créer le code, réessaye.');
                     return;
                 }
                 setHostMode('starting');
+                setHostDebug(`Tentative ${retry + 1}: création du peer...`);
                 const code = generateCode();
                 try {
                     if (hostPeerRef.current) { try { hostPeerRef.current.destroy(); } catch(e){} hostPeerRef.current = null; }
-                    const peer = new Peer('darts-app-' + code);
+                    const peer = new Peer('darts-app-' + code, PEER_CONFIG);
                     hostPeerRef.current = peer;
-                    peer.on('open', () => {
+                    setHostDebug('Enregistrement du code sur le serveur PeerJS...');
+                    peer.on('open', (id) => {
                         setHostCode(code);
                         setHostMode('waiting');
+                        setHostDebug(`Code prêt (${id}). En attente d'un spectateur...`);
                     });
                     peer.on('connection', (conn) => {
                         hostConnRef.current = conn;
+                        setHostDebug('Spectateur entrant détecté, ouverture du canal...');
                         conn.on('open', () => {
                             setHostMode('connected');
-                            // Envoie l'état courant immédiatement
+                            setHostDebug('Spectateur connecté !');
                             sendFullState(conn);
                         });
                         conn.on('close', () => {
                             setHostMode('waiting');
+                            setHostDebug('Spectateur déconnecté');
                             hostConnRef.current = null;
                         });
-                        conn.on('error', () => {
+                        conn.on('error', (err) => {
                             setHostMode('waiting');
+                            setHostDebug(`Erreur canal: ${err && (err.type || err.message) || 'inconnue'}`);
                             hostConnRef.current = null;
                         });
                     });
                     peer.on('error', (err) => {
+                        const t = err && (err.type || err.message) || 'inconnue';
+                        setHostDebug(`Erreur peer: ${t}`);
                         if (err && err.type === 'unavailable-id') {
                             startHost(retry + 1);
                         } else {
                             console.warn('Host peer error', err);
                         }
                     });
+                    peer.on('disconnected', () => {
+                        setHostDebug('Déconnecté du serveur PeerJS, tentative de reconnexion...');
+                        try { peer.reconnect(); } catch(e){}
+                    });
                 } catch (e) {
+                    setHostDebug(`Exception: ${e.message}`);
                     startHost(retry + 1);
                 }
             }
@@ -818,6 +864,12 @@
                                     <div className={`text-center font-bold text-sm mb-3 ${hostMode === 'connected' ? 'text-closed' : 'text-yellow-400'}`}>
                                         {hostMode === 'connected' ? '● Spectateur connecté' : '○ En attente de connexion…'}
                                     </div>
+                                    {hostDebug && (
+                                        <div className="bg-bg border border-border rounded-xl px-3 py-2 mb-3 text-[11px] md:text-xs text-textMuted break-words">
+                                            <div className="font-bold text-white mb-1">Debug :</div>
+                                            {hostDebug}
+                                        </div>
+                                    )}
                                     <button onClick={stopHost}
                                             className="w-full py-3 rounded-xl bg-red-600/80 text-white font-bold">
                                         Arrêter le second écran
@@ -863,7 +915,7 @@
                         </div>
                     );
                 }
-                return <SpectatorView state={spectatorState} onQuit={quitSpectator} connStatus={spectatorConn} />;
+                return <SpectatorView state={spectatorState} onQuit={quitSpectator} connStatus={spectatorConn} debug={spectatorDebug} />;
             }
 
             // ==================== ÉCRAN SETUP ====================
