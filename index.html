@@ -327,6 +327,8 @@
             const specConnRef = useRef(null);
             const specReconnectRef = useRef(null);
             const specCodeRef = useRef(null);
+            const specBcRef = useRef(null);
+            const hostBcRef = useRef(null);
 
             const PEER_CONFIG = {
                 debug: 1,
@@ -360,6 +362,24 @@
                 setSpectatorConn('connecting');
                 setSpectatorEntryError('');
                 setSpectatorDebug('1. Création du peer...');
+
+                // Canal local (même navigateur, même appareil) — utile pour tester sans 2e appareil
+                try {
+                    if (specBcRef.current) { try { specBcRef.current.close(); } catch(e){} specBcRef.current = null; }
+                    if (typeof BroadcastChannel !== 'undefined') {
+                        const bc = new BroadcastChannel('darts-app-' + code);
+                        specBcRef.current = bc;
+                        bc.onmessage = (ev) => {
+                            if (ev.data && ev.data.type === 'state') {
+                                setSpectatorState(ev.data.payload);
+                                setSpectatorConn('connected');
+                                setSpectatorDebug('Connecté via canal local (même appareil)');
+                            }
+                        };
+                        bc.postMessage({ type: 'hello' });
+                    }
+                } catch (e) { /* BC indispo */ }
+
                 try {
                     if (specPeerRef.current) { specPeerRef.current.destroy(); specPeerRef.current = null; }
                     const peer = new Peer(undefined, PEER_CONFIG);
@@ -420,6 +440,7 @@
                 if (specReconnectRef.current) { clearTimeout(specReconnectRef.current); specReconnectRef.current = null; }
                 if (specConnRef.current) { try { specConnRef.current.close(); } catch(e){} specConnRef.current = null; }
                 if (specPeerRef.current) { try { specPeerRef.current.destroy(); } catch(e){} specPeerRef.current = null; }
+                if (specBcRef.current) { try { specBcRef.current.close(); } catch(e){} specBcRef.current = null; }
                 specCodeRef.current = null;
                 setSpectatorState(null);
                 setSpectatorConn('idle');
@@ -447,6 +468,24 @@
                 setHostMode('starting');
                 setHostDebug(`Tentative ${retry + 1}: création du peer...`);
                 const code = generateCode();
+
+                // Canal local (même navigateur, même appareil) — fonctionne instantanément sans WebRTC
+                try {
+                    if (hostBcRef.current) { try { hostBcRef.current.close(); } catch(e){} hostBcRef.current = null; }
+                    if (typeof BroadcastChannel !== 'undefined') {
+                        const bc = new BroadcastChannel('darts-app-' + code);
+                        hostBcRef.current = bc;
+                        bc.onmessage = (ev) => {
+                            if (ev.data && ev.data.type === 'hello') {
+                                setHostMode('connected');
+                                setHostDebug('Spectateur local connecté (même appareil)');
+                                // Diffuse immédiatement l'état actuel
+                                sendFullStateBC();
+                            }
+                        };
+                    }
+                } catch (e) { /* BC indispo */ }
+
                 try {
                     if (hostPeerRef.current) { try { hostPeerRef.current.destroy(); } catch(e){} hostPeerRef.current = null; }
                     const peer = new Peer('darts-app-' + code, PEER_CONFIG);
@@ -520,6 +559,7 @@
             function stopHost() {
                 if (hostConnRef.current) { try { hostConnRef.current.close(); } catch(e){} hostConnRef.current = null; }
                 if (hostPeerRef.current) { try { hostPeerRef.current.destroy(); } catch(e){} hostPeerRef.current = null; }
+                if (hostBcRef.current) { try { hostBcRef.current.close(); } catch(e){} hostBcRef.current = null; }
                 setHostMode('off');
                 setHostCode(null);
                 setShowHostModal(false);
@@ -546,23 +586,36 @@
             const activeColor = playerColor(currentPlayerIndex);
             const scoreboardRef = useRef(null);
 
-            // Envoi de l'état au spectateur quand quelque chose change
-            function sendFullState(conn) {
-                const c = conn || hostConnRef.current;
-                if (!c || c.open === false) return;
+            // Construit le payload de l'état courant
+            function buildStatePayload() {
+                return {
+                    gameState, mode, doubleOut, players, scores,
+                    currentPlayerIndex, currentTurnDarts, multiplier, winner, turnHistory,
+                };
+            }
+
+            // Diffuse sur le canal local (même appareil, instantané)
+            function sendFullStateBC() {
+                if (!hostBcRef.current) return;
                 try {
-                    c.send({
-                        type: 'state',
-                        payload: {
-                            gameState, mode, doubleOut, players, scores,
-                            currentPlayerIndex, currentTurnDarts, multiplier, winner, turnHistory,
-                        },
-                    });
+                    hostBcRef.current.postMessage({ type: 'state', payload: buildStatePayload() });
                 } catch (e) { /* noop */ }
             }
 
+            // Envoi de l'état au spectateur (PeerJS + BroadcastChannel)
+            function sendFullState(conn) {
+                const payload = buildStatePayload();
+                const c = conn || hostConnRef.current;
+                if (c && c.open !== false) {
+                    try { c.send({ type: 'state', payload }); } catch (e) { /* noop */ }
+                }
+                if (hostBcRef.current) {
+                    try { hostBcRef.current.postMessage({ type: 'state', payload }); } catch (e) { /* noop */ }
+                }
+            }
+
             useEffect(() => {
-                if (hostMode !== 'connected') return;
+                if (hostMode === 'off' || hostMode === 'starting') return;
                 sendFullState();
                 // eslint-disable-next-line
             }, [gameState, mode, doubleOut, players, scores, currentPlayerIndex, currentTurnDarts, multiplier, winner, turnHistory, hostMode]);
