@@ -336,11 +336,10 @@
                         { urls: 'stun:stun1.l.google.com:19302' },
                         { urls: 'stun:stun.cloudflare.com:3478' },
                         { urls: 'stun:global.stun.twilio.com:3478' },
-                        // TURN gratuits (relais quand le P2P direct échoue)
+                        // TURN gratuits openrelay (relais quand le P2P direct échoue)
                         { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
                         { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-                        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-                        { urls: 'turn:relay1.expressturn.com:3478', username: 'efJBIBF2RWPFI0WFGF', credential: 'EisHMx2YJZUKtSAQ' }
+                        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
                     ]
                 }
             };
@@ -462,15 +461,23 @@
                         hostConnRef.current = conn;
                         setHostDebug('Spectateur entrant détecté, négociation ICE...');
                         // Surveille l'état ICE pour savoir où ça bloque
+                        const states = [];
                         const iceWatch = setInterval(() => {
                             if (conn.peerConnection) {
                                 clearInterval(iceWatch);
                                 const pc = conn.peerConnection;
-                                pc.addEventListener('iceconnectionstatechange', () => {
-                                    setHostDebug(`ICE: ${pc.iceConnectionState} | Conn: ${pc.connectionState}`);
+                                const log = () => {
+                                    states.push(`ICE:${pc.iceConnectionState}`);
+                                    setHostDebug(states.slice(-5).join(' → '));
+                                };
+                                pc.addEventListener('iceconnectionstatechange', log);
+                                pc.addEventListener('icegatheringstatechange', () => {
+                                    states.push(`gather:${pc.iceGatheringState}`);
+                                    setHostDebug(states.slice(-5).join(' → '));
                                 });
-                                pc.addEventListener('connectionstatechange', () => {
-                                    setHostDebug(`ICE: ${pc.iceConnectionState} | Conn: ${pc.connectionState}`);
+                                pc.addEventListener('icecandidateerror', (ev) => {
+                                    states.push(`candErr:${ev.errorCode}`);
+                                    setHostDebug(states.slice(-5).join(' → '));
                                 });
                             }
                         }, 100);
