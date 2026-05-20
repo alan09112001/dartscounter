@@ -475,9 +475,9 @@
                     const roomRef = db.ref('rooms/' + code);
                     specRoomRef.current = roomRef;
 
-                    // Vérifie d'abord que la room existe
-                    roomRef.child('hostPresent').once('value').then(snap => {
-                        if (!snap.exists() || snap.val() !== true) {
+                    // Vérifie que la room existe (peu importe hostPresent — l'hôte peut être temporairement déco)
+                    roomRef.once('value').then(snap => {
+                        if (!snap.exists()) {
                             setSpectatorEntryError('Code introuvable. Vérifie le code sur l\'écran principal.');
                             setSpectatorConn('disconnected');
                             setSpectatorDebug('Room inexistante');
@@ -485,34 +485,46 @@
                         }
 
                         // Annonce la présence du spectateur (avec auto-cleanup à la déco)
-                        const myRef = roomRef.child('spectators').push();
-                        myRef.set({ joinedAt: firebase.database.ServerValue.TIMESTAMP });
-                        myRef.onDisconnect().remove();
+                        try {
+                            const myRef = roomRef.child('spectators').push();
+                            myRef.set({ joinedAt: firebase.database.ServerValue.TIMESTAMP }).catch(() => {});
+                            myRef.onDisconnect().remove();
+                        } catch(e) {}
 
-                        // Écoute l'état en temps réel
-                        roomRef.child('state').on('value', (snap) => {
-                            const data = snap.val();
+                        // Charge l'état initial immédiatement si dispo
+                        const initialState = snap.child('state').val();
+                        if (initialState) {
+                            setSpectatorState(initialState);
+                            setSpectatorConn('connected');
+                            setSpectatorDebug('Connecté');
+                        } else {
+                            setSpectatorConn('connected');
+                            setSpectatorDebug('Connecté, en attente du début de la partie');
+                        }
+
+                        // Écoute les MAJ d'état en temps réel
+                        roomRef.child('state').on('value', (s) => {
+                            const data = s.val();
                             if (data) {
                                 setSpectatorState(data);
                                 setSpectatorConn('connected');
-                                setSpectatorDebug('Connecté');
                             }
                         }, (err) => {
                             setSpectatorDebug('Erreur lecture: ' + (err && err.message || 'inconnue'));
-                            setSpectatorConn('disconnected');
                         });
 
-                        // Détecte la déconnexion de l'hôte
-                        roomRef.child('hostPresent').on('value', (snap) => {
-                            if (!snap.exists() || snap.val() !== true) {
-                                setSpectatorConn('disconnected');
-                                setSpectatorDebug('L\'écran principal s\'est déconnecté');
+                        // Affiche l'état de présence de l'hôte (info seulement, ne bloque pas)
+                        roomRef.child('hostPresent').on('value', (s) => {
+                            if (s.val() === false) {
+                                setSpectatorDebug('Écran principal temporairement déconnecté');
+                            } else if (s.val() === true) {
+                                setSpectatorDebug('Connecté');
                             }
                         });
                     }).catch((err) => {
                         setSpectatorDebug('Erreur: ' + (err && err.message || 'inconnue'));
                         setSpectatorConn('disconnected');
-                        setSpectatorEntryError('Impossible de se connecter. Vérifie ta connexion internet.');
+                        setSpectatorEntryError('Impossible de se connecter. Vérifie ta connexion internet ou les règles Firebase.');
                     });
                 } catch (e) {
                     setSpectatorDebug('Exception: ' + e.message);
