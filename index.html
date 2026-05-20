@@ -28,11 +28,27 @@
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- PeerJS pour le second écran (P2P, pas de backend) -->
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <!-- Firebase (second écran via Realtime DB, fiable en PWA et derrière firewall) -->
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 
     <!-- QR code generator -->
     <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+
+    <script>
+        // Initialisation Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyBv2ayEEKUwmXVCpIXA6zEz_5C2zdpbIIY",
+            authDomain: "darts-app-15809.firebaseapp.com",
+            databaseURL: "https://darts-app-15809-default-rtdb.europe-west1.firebasedatabase.app",
+            projectId: "darts-app-15809",
+            storageBucket: "darts-app-15809.firebasestorage.app",
+            messagingSenderId: "168984483826",
+            appId: "1:168984483826:web:3767ec326f0ec60bc03d6b"
+        };
+        firebase.initializeApp(firebaseConfig);
+        window.dartsDB = firebase.database();
+    </script>
 
     <script>
         tailwind.config = {
@@ -126,6 +142,32 @@
                 try { localStorage.setItem('darts-spectator-theme', next); } catch(e) {}
             };
 
+            const [isFs, setIsFs] = useState(() => !!(document.fullscreenElement || document.webkitFullscreenElement));
+            useEffect(() => {
+                const handler = () => setIsFs(!!(document.fullscreenElement || document.webkitFullscreenElement));
+                document.addEventListener('fullscreenchange', handler);
+                document.addEventListener('webkitfullscreenchange', handler);
+                return () => {
+                    document.removeEventListener('fullscreenchange', handler);
+                    document.removeEventListener('webkitfullscreenchange', handler);
+                };
+            }, []);
+            const toggleFs = () => {
+                const inFs = document.fullscreenElement || document.webkitFullscreenElement;
+                if (inFs) {
+                    const fn = document.exitFullscreen || document.webkitExitFullscreen;
+                    if (fn) fn.call(document);
+                } else {
+                    const el = document.documentElement;
+                    const fn = el.requestFullscreen || el.webkitRequestFullscreen;
+                    if (fn) {
+                        try { fn.call(el); } catch(e) { window.alert('Plein écran refusé par le navigateur.'); }
+                    } else {
+                        window.alert("Plein écran non supporté ici. Sur iPhone Safari : fais défiler la page pour masquer la barre, ou installe l'app via 'Sur l'écran d'accueil' pour avoir le plein écran auto.");
+                    }
+                }
+            };
+
             const t = isLight ? {
                 bg: '#f1f5f9',
                 card: '#ffffff',
@@ -168,6 +210,16 @@
                 </button>
             );
 
+            const FsBtn = ({ inHeader }) => (
+                <button onClick={toggleFs}
+                        className={inHeader
+                            ? "bg-black/25 px-2 md:px-3 py-2 rounded-xl text-xs md:text-sm font-bold tracking-wider text-white"
+                            : "py-3 px-6 rounded-xl font-bold"}
+                        style={inHeader ? {} : { backgroundColor: t.card, border: `1px solid ${t.border}`, color: t.text }}>
+                    {isFs ? '🗗' : '⛶'}{!inHeader && (isFs ? ' Quitter' : ' Plein écran')}
+                </button>
+            );
+
             if (!state || state.gameState === 'setup') {
                 return (
                     <div className="flex flex-col h-full w-full items-center justify-center text-center p-6" style={{ backgroundColor: t.bg, color: t.text }}>
@@ -183,7 +235,8 @@
                                 {debug}
                             </div>
                         )}
-                        <div className="flex gap-3">
+                        <div className="flex gap-3 flex-wrap justify-center">
+                            <FsBtn />
                             <ThemeBtn />
                             <button onClick={onQuit} className="py-3 px-6 rounded-xl font-bold" style={{ backgroundColor: t.card, border: `1px solid ${t.border}`, color: t.text }}>← Quitter</button>
                         </div>
@@ -200,7 +253,8 @@
                         <div className="text-6xl md:text-8xl font-black mb-8" style={{ color: playerColor(winnerIdx) }}>
                             {state.winner.name}
                         </div>
-                        <div className="flex gap-3">
+                        <div className="flex gap-3 flex-wrap justify-center">
+                            <FsBtn />
                             <ThemeBtn />
                             <button onClick={onQuit} className="py-3 px-6 rounded-xl font-bold" style={{ backgroundColor: t.card, border: `1px solid ${t.border}`, color: t.text }}>← Quitter</button>
                         </div>
@@ -231,6 +285,7 @@
                         <div className="text-xs md:text-lg font-bold text-black/75 mt-0.5 md:mt-1 truncate max-w-full">{turnDartsLabel}</div>
                     </div>
                     <div className="flex gap-1.5 md:gap-2 flex-shrink-0">
+                        <FsBtn inHeader />
                         <ThemeBtn inHeader />
                         <button onClick={onQuit} className="bg-black/25 px-2 md:px-3 py-2 rounded-xl text-xs md:text-sm font-bold tracking-wider text-white">←</button>
                     </div>
@@ -387,28 +442,10 @@
             const [spectatorEntryError, setSpectatorEntryError] = useState('');
             const [spectatorDebug, setSpectatorDebug] = useState('');
             const [hostDebug, setHostDebug] = useState('');
-            const specPeerRef = useRef(null);
-            const specConnRef = useRef(null);
-            const specReconnectRef = useRef(null);
+            const specRoomRef = useRef(null);
             const specCodeRef = useRef(null);
-            const specBcRef = useRef(null);
-            const hostBcRef = useRef(null);
-
-            const PEER_CONFIG = {
-                debug: 1,
-                config: {
-                    'iceServers': [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' },
-                        { urls: 'stun:stun.cloudflare.com:3478' },
-                        { urls: 'stun:global.stun.twilio.com:3478' },
-                        // TURN gratuits openrelay (relais quand le P2P direct échoue)
-                        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-                        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-                        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
-                    ]
-                }
-            };
+            const hostRoomRef = useRef(null);
+            const hostSpectatorsRef = useRef(null);
 
             // Auto-spectator depuis URL
             useEffect(() => {
@@ -425,86 +462,69 @@
                 specCodeRef.current = code;
                 setSpectatorConn('connecting');
                 setSpectatorEntryError('');
-                setSpectatorDebug('1. Création du peer...');
+                setSpectatorDebug('Connexion à la room...');
 
-                // Canal local (même navigateur, même appareil) — utile pour tester sans 2e appareil
                 try {
-                    if (specBcRef.current) { try { specBcRef.current.close(); } catch(e){} specBcRef.current = null; }
-                    if (typeof BroadcastChannel !== 'undefined') {
-                        const bc = new BroadcastChannel('darts-app-' + code);
-                        specBcRef.current = bc;
-                        bc.onmessage = (ev) => {
-                            if (ev.data && ev.data.type === 'state') {
-                                setSpectatorState(ev.data.payload);
-                                setSpectatorConn('connected');
-                                setSpectatorDebug('Connecté via canal local (même appareil)');
-                            }
-                        };
-                        bc.postMessage({ type: 'hello' });
+                    // Détache l'ancienne référence si elle existe
+                    if (specRoomRef.current) {
+                        try { specRoomRef.current.off(); } catch(e){}
+                        specRoomRef.current = null;
                     }
-                } catch (e) { /* BC indispo */ }
 
-                try {
-                    if (specPeerRef.current) { specPeerRef.current.destroy(); specPeerRef.current = null; }
-                    const peer = new Peer(undefined, PEER_CONFIG);
-                    specPeerRef.current = peer;
-                    setSpectatorDebug('2. Connexion au serveur PeerJS...');
-                    peer.on('open', (id) => {
-                        setSpectatorDebug(`3. Peer OK (${id.slice(0,6)}…). Recherche de darts-app-${code}…`);
-                        const conn = peer.connect('darts-app-' + code, { reliable: true });
-                        specConnRef.current = conn;
-                        conn.on('open', () => {
-                            setSpectatorDebug('4. Connecté !');
-                            setSpectatorConn('connected');
-                        });
-                        conn.on('data', (data) => {
-                            if (data && data.type === 'state') setSpectatorState(data.payload);
-                        });
-                        conn.on('close', () => {
-                            setSpectatorDebug('Connexion fermée par l\'hôte');
-                            setSpectatorConn('disconnected');
-                            scheduleSpecReconnect();
-                        });
-                        conn.on('error', (err) => {
-                            setSpectatorDebug(`Erreur conn: ${err && (err.type || err.message) || 'inconnue'}`);
-                            setSpectatorConn('disconnected');
-                            scheduleSpecReconnect();
-                        });
-                    });
-                    peer.on('error', (err) => {
-                        console.warn('Spectator peer error', err);
-                        const t = err && (err.type || err.message) || 'inconnue';
-                        setSpectatorDebug(`Erreur peer: ${t}`);
-                        setSpectatorConn('disconnected');
-                        if (err && err.type === 'peer-unavailable') {
+                    const db = window.dartsDB;
+                    const roomRef = db.ref('rooms/' + code);
+                    specRoomRef.current = roomRef;
+
+                    // Vérifie d'abord que la room existe
+                    roomRef.child('hostPresent').once('value').then(snap => {
+                        if (!snap.exists() || snap.val() !== true) {
                             setSpectatorEntryError('Code introuvable. Vérifie le code sur l\'écran principal.');
+                            setSpectatorConn('disconnected');
+                            setSpectatorDebug('Room inexistante');
+                            return;
                         }
-                        scheduleSpecReconnect();
-                    });
-                    peer.on('disconnected', () => {
-                        setSpectatorDebug('Déconnecté du serveur PeerJS');
+
+                        // Annonce la présence du spectateur (avec auto-cleanup à la déco)
+                        const myRef = roomRef.child('spectators').push();
+                        myRef.set({ joinedAt: firebase.database.ServerValue.TIMESTAMP });
+                        myRef.onDisconnect().remove();
+
+                        // Écoute l'état en temps réel
+                        roomRef.child('state').on('value', (snap) => {
+                            const data = snap.val();
+                            if (data) {
+                                setSpectatorState(data);
+                                setSpectatorConn('connected');
+                                setSpectatorDebug('Connecté');
+                            }
+                        }, (err) => {
+                            setSpectatorDebug('Erreur lecture: ' + (err && err.message || 'inconnue'));
+                            setSpectatorConn('disconnected');
+                        });
+
+                        // Détecte la déconnexion de l'hôte
+                        roomRef.child('hostPresent').on('value', (snap) => {
+                            if (!snap.exists() || snap.val() !== true) {
+                                setSpectatorConn('disconnected');
+                                setSpectatorDebug('L\'écran principal s\'est déconnecté');
+                            }
+                        });
+                    }).catch((err) => {
+                        setSpectatorDebug('Erreur: ' + (err && err.message || 'inconnue'));
+                        setSpectatorConn('disconnected');
+                        setSpectatorEntryError('Impossible de se connecter. Vérifie ta connexion internet.');
                     });
                 } catch (e) {
-                    setSpectatorDebug(`Exception: ${e.message}`);
+                    setSpectatorDebug('Exception: ' + e.message);
                     setSpectatorConn('disconnected');
-                    scheduleSpecReconnect();
                 }
             }
 
-            function scheduleSpecReconnect() {
-                if (specReconnectRef.current) clearTimeout(specReconnectRef.current);
-                specReconnectRef.current = setTimeout(() => {
-                    if (appMode === 'spectator' && specCodeRef.current && spectatorConn !== 'connected') {
-                        startSpectator(specCodeRef.current);
-                    }
-                }, 3000);
-            }
-
             function quitSpectator() {
-                if (specReconnectRef.current) { clearTimeout(specReconnectRef.current); specReconnectRef.current = null; }
-                if (specConnRef.current) { try { specConnRef.current.close(); } catch(e){} specConnRef.current = null; }
-                if (specPeerRef.current) { try { specPeerRef.current.destroy(); } catch(e){} specPeerRef.current = null; }
-                if (specBcRef.current) { try { specBcRef.current.close(); } catch(e){} specBcRef.current = null; }
+                if (specRoomRef.current) {
+                    try { specRoomRef.current.off(); } catch(e){}
+                    specRoomRef.current = null;
+                }
                 specCodeRef.current = null;
                 setSpectatorState(null);
                 setSpectatorConn('idle');
@@ -519,111 +539,66 @@
             const [hostMode, setHostMode] = useState('off'); // off | starting | waiting | connected
             const [hostCode, setHostCode] = useState(null);
             const [showHostModal, setShowHostModal] = useState(false);
-            const hostPeerRef = useRef(null);
-            const hostConnRef = useRef(null);
 
-            function startHost(retry = 0) {
-                if (retry > 5) {
-                    setHostMode('off');
-                    setHostDebug('Échec après 5 tentatives');
-                    window.alert('Impossible de créer le code, réessaye.');
-                    return;
-                }
+            function startHost() {
                 setHostMode('starting');
-                setHostDebug(`Tentative ${retry + 1}: création du peer...`);
+                setHostDebug('Création de la room Firebase...');
                 const code = generateCode();
 
-                // Canal local (même navigateur, même appareil) — fonctionne instantanément sans WebRTC
                 try {
-                    if (hostBcRef.current) { try { hostBcRef.current.close(); } catch(e){} hostBcRef.current = null; }
-                    if (typeof BroadcastChannel !== 'undefined') {
-                        const bc = new BroadcastChannel('darts-app-' + code);
-                        hostBcRef.current = bc;
-                        bc.onmessage = (ev) => {
-                            if (ev.data && ev.data.type === 'hello') {
-                                setHostMode('connected');
-                                setHostDebug('Spectateur local connecté (même appareil)');
-                                // Diffuse immédiatement l'état actuel
-                                sendFullStateBC();
-                            }
-                        };
-                    }
-                } catch (e) { /* BC indispo */ }
+                    const db = window.dartsDB;
+                    const roomRef = db.ref('rooms/' + code);
+                    hostRoomRef.current = roomRef;
 
-                try {
-                    if (hostPeerRef.current) { try { hostPeerRef.current.destroy(); } catch(e){} hostPeerRef.current = null; }
-                    const peer = new Peer('darts-app-' + code, PEER_CONFIG);
-                    hostPeerRef.current = peer;
-                    setHostDebug('Enregistrement du code sur le serveur PeerJS...');
-                    peer.on('open', (id) => {
+                    // Initialise la room avec présence + état
+                    roomRef.set({
+                        hostPresent: true,
+                        createdAt: firebase.database.ServerValue.TIMESTAMP,
+                        state: buildStatePayload()
+                    }).then(() => {
                         setHostCode(code);
                         setHostMode('waiting');
-                        setHostDebug(`Code prêt (${id}). En attente d'un spectateur...`);
-                    });
-                    peer.on('connection', (conn) => {
-                        hostConnRef.current = conn;
-                        setHostDebug('Spectateur entrant détecté, négociation ICE...');
-                        // Surveille l'état ICE pour savoir où ça bloque
-                        const states = [];
-                        const iceWatch = setInterval(() => {
-                            if (conn.peerConnection) {
-                                clearInterval(iceWatch);
-                                const pc = conn.peerConnection;
-                                const log = () => {
-                                    states.push(`ICE:${pc.iceConnectionState}`);
-                                    setHostDebug(states.slice(-5).join(' → '));
-                                };
-                                pc.addEventListener('iceconnectionstatechange', log);
-                                pc.addEventListener('icegatheringstatechange', () => {
-                                    states.push(`gather:${pc.iceGatheringState}`);
-                                    setHostDebug(states.slice(-5).join(' → '));
-                                });
-                                pc.addEventListener('icecandidateerror', (ev) => {
-                                    states.push(`candErr:${ev.errorCode}`);
-                                    setHostDebug(states.slice(-5).join(' → '));
-                                });
+                        setHostDebug('Code prêt. En attente d\'un spectateur...');
+
+                        // Auto-cleanup : si on perd la connexion, la room disparaît
+                        roomRef.onDisconnect().remove();
+
+                        // Compte les spectateurs en temps réel
+                        const spectatorsRef = roomRef.child('spectators');
+                        hostSpectatorsRef.current = spectatorsRef;
+                        spectatorsRef.on('value', (snap) => {
+                            const count = snap.numChildren();
+                            if (count > 0) {
+                                setHostMode('connected');
+                                setHostDebug(`${count} spectateur${count > 1 ? 's' : ''} connecté${count > 1 ? 's' : ''}`);
+                            } else {
+                                setHostMode('waiting');
+                                setHostDebug('Code prêt. En attente d\'un spectateur...');
                             }
-                        }, 100);
-                        setTimeout(() => clearInterval(iceWatch), 10000);
-                        conn.on('open', () => {
-                            setHostMode('connected');
-                            setHostDebug('Spectateur connecté !');
-                            sendFullState(conn);
                         });
-                        conn.on('close', () => {
-                            setHostMode('waiting');
-                            setHostDebug('Spectateur déconnecté');
-                            hostConnRef.current = null;
-                        });
-                        conn.on('error', (err) => {
-                            setHostMode('waiting');
-                            setHostDebug(`Erreur canal: ${err && (err.type || err.message) || 'inconnue'}`);
-                            hostConnRef.current = null;
-                        });
-                    });
-                    peer.on('error', (err) => {
-                        const t = err && (err.type || err.message) || 'inconnue';
-                        setHostDebug(`Erreur peer: ${t}`);
-                        if (err && err.type === 'unavailable-id') {
-                            startHost(retry + 1);
-                        } else {
-                            console.warn('Host peer error', err);
-                        }
-                    });
-                    peer.on('disconnected', () => {
-                        setHostDebug('Déconnecté du serveur PeerJS, tentative de reconnexion...');
-                        try { peer.reconnect(); } catch(e){}
+                    }).catch((err) => {
+                        setHostDebug('Erreur Firebase: ' + (err && err.message || 'inconnue'));
+                        setHostMode('off');
+                        window.alert('Impossible de créer le code. Vérifie ta connexion internet.');
                     });
                 } catch (e) {
-                    setHostDebug(`Exception: ${e.message}`);
-                    startHost(retry + 1);
+                    setHostDebug('Exception: ' + e.message);
+                    setHostMode('off');
                 }
             }
 
             function stopHost() {
-                if (hostConnRef.current) { try { hostConnRef.current.close(); } catch(e){} hostConnRef.current = null; }
-                if (hostPeerRef.current) { try { hostPeerRef.current.destroy(); } catch(e){} hostPeerRef.current = null; }
-                if (hostBcRef.current) { try { hostBcRef.current.close(); } catch(e){} hostBcRef.current = null; }
+                if (hostSpectatorsRef.current) {
+                    try { hostSpectatorsRef.current.off(); } catch(e){}
+                    hostSpectatorsRef.current = null;
+                }
+                if (hostRoomRef.current) {
+                    try {
+                        hostRoomRef.current.onDisconnect().cancel();
+                        hostRoomRef.current.remove();
+                    } catch(e){}
+                    hostRoomRef.current = null;
+                }
                 setHostMode('off');
                 setHostCode(null);
                 setShowHostModal(false);
@@ -658,24 +633,12 @@
                 };
             }
 
-            // Diffuse sur le canal local (même appareil, instantané)
-            function sendFullStateBC() {
-                if (!hostBcRef.current) return;
+            // Push l'état dans Firebase (lu en temps réel par les spectateurs)
+            function sendFullState() {
+                if (!hostRoomRef.current) return;
                 try {
-                    hostBcRef.current.postMessage({ type: 'state', payload: buildStatePayload() });
+                    hostRoomRef.current.child('state').set(buildStatePayload());
                 } catch (e) { /* noop */ }
-            }
-
-            // Envoi de l'état au spectateur (PeerJS + BroadcastChannel)
-            function sendFullState(conn) {
-                const payload = buildStatePayload();
-                const c = conn || hostConnRef.current;
-                if (c && c.open !== false) {
-                    try { c.send({ type: 'state', payload }); } catch (e) { /* noop */ }
-                }
-                if (hostBcRef.current) {
-                    try { hostBcRef.current.postMessage({ type: 'state', payload }); } catch (e) { /* noop */ }
-                }
             }
 
             useEffect(() => {
