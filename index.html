@@ -855,6 +855,9 @@
             const [savedGames, setSavedGames] = useState([]);
 
             // Lit la liste des rooms en temps réel (= parties reprenables)
+            // Firebase peut sérialiser les arrays en objets — on convertit défensivement.
+            const fbToArray = (v) => Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.values(v) : []);
+
             useEffect(() => {
                 const db = window.dartsDB;
                 if (!db) return;
@@ -864,19 +867,22 @@
                     snap.forEach(child => {
                         const v = child.val();
                         const st = v && v.state;
-                        if (st && st.gameState === 'playing' && !st.winner && st.players && st.players.length > 0) {
-                            list.push({
-                                id: child.key,
-                                mode: st.mode,
-                                doubleOut: st.doubleOut,
-                                players: st.players,
-                                scores: st.scores,
-                                currentPlayerIndex: st.currentPlayerIndex || 0,
-                                currentTurnDarts: st.currentTurnDarts || [],
-                                turnHistory: st.turnHistory || [],
-                                savedAt: v.lastSeen || v.createdAt || 0,
-                            });
-                        }
+                        if (!st) return;
+                        if (st.winner) return;
+                        if (st.gameState !== 'playing') return;
+                        const playersArr = fbToArray(st.players);
+                        if (playersArr.length === 0) return;
+                        list.push({
+                            id: child.key,
+                            mode: st.mode,
+                            doubleOut: st.doubleOut,
+                            players: playersArr,
+                            scores: st.scores || {},
+                            currentPlayerIndex: st.currentPlayerIndex || 0,
+                            currentTurnDarts: fbToArray(st.currentTurnDarts),
+                            turnHistory: fbToArray(st.turnHistory),
+                            savedAt: v.lastSeen || v.createdAt || 0,
+                        });
                     });
                     list.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
                     setSavedGames(list);
@@ -910,8 +916,11 @@
                 setPlayers(s.players);
                 setScores(s.scores);
                 setCurrentPlayerIndex(s.currentPlayerIndex || 0);
-                setCurrentTurnDarts(s.currentTurnDarts || []);
-                setTurnHistory(s.turnHistory || []);
+                setCurrentTurnDarts(fbToArray(s.currentTurnDarts));
+                setTurnHistory(fbToArray(s.turnHistory).map(t => ({
+                    playerIdx: t.playerIdx,
+                    darts: fbToArray(t.darts),
+                })));
                 setHistory([]);
                 setRedoStack([]);
                 setWinner(null);
