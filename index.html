@@ -298,6 +298,7 @@
                 const leftPlayers = players.slice(0, leftCount);
                 const rightPlayers = players.slice(leftCount);
                 const rightStartIdx = leftCount;
+                const currentPlayerId = current.id;
 
                 const PlayerCard = ({ p, idx }) => {
                     const isActive = idx === currentPlayerIndex;
@@ -311,6 +312,23 @@
                             <div className="font-bold truncate w-full text-center px-1" style={{ color, fontSize: 'clamp(10px, 2vh, 18px)' }}>{p.name}</div>
                             <div className="font-black leading-none mt-0.5 md:mt-1" style={{ color, fontSize: 'clamp(22px, 6vh, 60px)' }}>{scores[p.id].total}</div>
                             <div className="mt-0.5 md:mt-1" style={{ color: t.textMuted, fontSize: 'clamp(8px, 1.6vh, 14px)' }}>{closed}/7 fermés</div>
+                        </div>
+                    );
+                };
+
+                const PlayerMarks = ({ p, idx }) => {
+                    const marks = scores[p.id].marks[num];
+                    const color = playerColor(idx);
+                    return (
+                        <div className="flex flex-col items-center gap-0.5" style={{ width: 'clamp(18px, 4vw, 56px)' }}>
+                            <div className="font-black" style={{ color, fontSize: 'clamp(7px, 1.4vh, 12px)' }}>J{idx + 1}</div>
+                            <div className="flex flex-col gap-0.5 w-full items-center">
+                                {[1, 2, 3].map(i => (
+                                    <div key={i}
+                                         style={{ backgroundColor: marks >= i ? (marks >= 3 ? '#10B981' : color) : t.emptyMark }}
+                                         className="w-full h-1 md:h-1.5 rounded-full"></div>
+                                ))}
+                            </div>
                         </div>
                     );
                 };
@@ -329,20 +347,48 @@
                                 <div className="flex-1 flex flex-col gap-1 md:gap-1.5">
                                     {CRICKET_NUMBERS.map(num => {
                                         const closedByAll = players.every(p => scores[p.id].marks[num] >= 3);
+                                        const currentMarks = scores[currentPlayerId].marks[num];
+                                        const currentClosed = currentMarks >= 3;
+                                        const someoneOppClosed = players.some(p => p.id !== currentPlayerId && scores[p.id].marks[num] >= 3);
+                                        const canScore = currentClosed && !closedByAll;
+                                        const mustDefend = !currentClosed && someoneOppClosed;
+
+                                        let rowBg = t.gridRowBg, rowBorder = t.border, numColor = t.numText, numBgColor = t.numBg, numBorder = t.numBorder, strike = 'none', rowOpacity = 1, statusLabel = null, statusColor = null;
+
+                                        if (closedByAll) {
+                                            rowBg = t.closedRowBg; numColor = t.closedNumText; numBgColor = t.closedNumBg; numBorder = t.closedNumBorder; strike = 'line-through'; rowOpacity = 0.45;
+                                        } else if (canScore) {
+                                            rowBg = isLight ? 'rgba(16,185,129,0.18)' : 'rgba(16,185,129,0.15)'; rowBorder = '#10B981'; numColor = '#10B981'; numBorder = '#10B981'; statusLabel = '+'; statusColor = '#10B981';
+                                        } else if (mustDefend) {
+                                            rowBg = isLight ? 'rgba(239,68,68,0.18)' : 'rgba(239,68,68,0.15)'; rowBorder = '#ef4444'; numColor = isLight ? '#dc2626' : '#fca5a5'; numBorder = '#ef4444'; statusLabel = '!'; statusColor = '#ef4444';
+                                        }
+
                                         return (
-                                            <div key={num} className="flex-1 min-h-0 flex items-center justify-around py-0.5 md:py-2 px-1 md:px-3 rounded-xl border-2"
-                                                 style={{ backgroundColor: closedByAll ? t.closedRowBg : t.gridRowBg, borderColor: t.border, opacity: closedByAll ? 0.5 : 1 }}>
-                                                <div className="flex items-center gap-0.5 md:gap-2 flex-1 justify-center">
-                                                    {players.map((p, idx) => {
+                                            <div key={num} className="flex-1 min-h-0 flex items-center py-0.5 md:py-2 px-1 md:px-3 rounded-xl border-2"
+                                                 style={{ backgroundColor: rowBg, borderColor: rowBorder, opacity: rowOpacity }}>
+
+                                                {/* Status label gauche */}
+                                                <div className="flex-shrink-0 flex justify-center" style={{ width: 'clamp(18px, 2.6vh, 30px)' }}>
+                                                    {statusLabel && (
+                                                        <div className="rounded-full flex items-center justify-center text-white font-black aspect-square"
+                                                             style={{ backgroundColor: statusColor, width: 'clamp(16px, 2.4vh, 26px)', fontSize: 'clamp(10px, 1.8vh, 16px)' }}>
+                                                            {statusLabel}
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* Marques des joueurs gauche */}
+                                                <div className="flex items-center gap-0.5 md:gap-2 flex-1 justify-end">
+                                                    {leftPlayers.map((p, i) => {
                                                         const marks = scores[p.id].marks[num];
-                                                        const color = playerColor(idx);
+                                                        const color = playerColor(i);
                                                         return (
                                                             <div key={p.id} className="flex flex-col items-center gap-0.5" style={{ width: 'clamp(18px, 4vw, 56px)' }}>
-                                                                <div className="font-black" style={{ color, fontSize: 'clamp(7px, 1.4vh, 12px)' }}>J{idx + 1}</div>
+                                                                <div className="font-black" style={{ color, fontSize: 'clamp(7px, 1.4vh, 12px)' }}>J{i + 1}</div>
                                                                 <div className="flex flex-col gap-0.5 w-full items-center">
-                                                                    {[1, 2, 3].map(i => (
-                                                                        <div key={i}
-                                                                             style={{ backgroundColor: marks >= i ? (marks >= 3 ? '#10B981' : color) : t.emptyMark }}
+                                                                    {[1, 2, 3].map(k => (
+                                                                        <div key={k}
+                                                                             style={{ backgroundColor: marks >= k ? (marks >= 3 ? '#10B981' : color) : t.emptyMark }}
                                                                              className="w-full h-1 md:h-1.5 rounded-full"></div>
                                                                     ))}
                                                                 </div>
@@ -350,10 +396,36 @@
                                                         );
                                                     })}
                                                 </div>
-                                                <div className="rounded-full flex items-center justify-center border-2 flex-shrink-0 ml-1 aspect-square"
-                                                     style={{ width: 'clamp(28px, 7vh, 80px)', backgroundColor: closedByAll ? t.closedNumBg : t.numBg, borderColor: closedByAll ? t.closedNumBorder : t.numBorder }}>
-                                                    <span className="font-bold" style={{ color: closedByAll ? t.closedNumText : t.numText, textDecoration: closedByAll ? 'line-through' : 'none', fontSize: 'clamp(13px, 3.5vh, 32px)' }}>{num === 25 ? 'B' : num}</span>
+
+                                                {/* Numéro centré */}
+                                                <div className="rounded-full flex items-center justify-center border-2 flex-shrink-0 mx-2 md:mx-4 aspect-square"
+                                                     style={{ width: 'clamp(28px, 7vh, 80px)', backgroundColor: numBgColor, borderColor: numBorder }}>
+                                                    <span className="font-bold" style={{ color: numColor, textDecoration: strike, fontSize: 'clamp(13px, 3.5vh, 32px)' }}>{num === 25 ? 'B' : num}</span>
                                                 </div>
+
+                                                {/* Marques des joueurs droite */}
+                                                <div className="flex items-center gap-0.5 md:gap-2 flex-1 justify-start">
+                                                    {rightPlayers.map((p, i) => {
+                                                        const realIdx = rightStartIdx + i;
+                                                        const marks = scores[p.id].marks[num];
+                                                        const color = playerColor(realIdx);
+                                                        return (
+                                                            <div key={p.id} className="flex flex-col items-center gap-0.5" style={{ width: 'clamp(18px, 4vw, 56px)' }}>
+                                                                <div className="font-black" style={{ color, fontSize: 'clamp(7px, 1.4vh, 12px)' }}>J{realIdx + 1}</div>
+                                                                <div className="flex flex-col gap-0.5 w-full items-center">
+                                                                    {[1, 2, 3].map(k => (
+                                                                        <div key={k}
+                                                                             style={{ backgroundColor: marks >= k ? (marks >= 3 ? '#10B981' : color) : t.emptyMark }}
+                                                                             className="w-full h-1 md:h-1.5 rounded-full"></div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+
+                                                {/* Spacer droite pour symétrie */}
+                                                <div className="flex-shrink-0" style={{ width: 'clamp(18px, 2.6vh, 30px)' }}></div>
                                             </div>
                                         );
                                     })}
