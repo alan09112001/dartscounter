@@ -547,6 +547,13 @@
 
                 try {
                     const db = window.dartsDB;
+
+                    // Nettoyage des rooms abandonnées (> 2h) avant d'en créer une nouvelle
+                    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+                    db.ref('rooms').orderByChild('createdAt').endAt(cutoff).limitToFirst(20).once('value').then(snap => {
+                        snap.forEach(child => { child.ref.remove().catch(() => {}); });
+                    }).catch(() => {});
+
                     const roomRef = db.ref('rooms/' + code);
                     hostRoomRef.current = roomRef;
 
@@ -554,14 +561,16 @@
                     roomRef.set({
                         hostPresent: true,
                         createdAt: firebase.database.ServerValue.TIMESTAMP,
+                        lastSeen: firebase.database.ServerValue.TIMESTAMP,
                         state: buildStatePayload()
                     }).then(() => {
                         setHostCode(code);
                         setHostMode('waiting');
                         setHostDebug('Code prêt. En attente d\'un spectateur...');
 
-                        // Auto-cleanup : si on perd la connexion, la room disparaît
-                        roomRef.onDisconnect().remove();
+                        // En cas de déco : ne supprime PAS la room, marque juste l'hôte absent
+                        // (permet de tester en switchant d'onglet, et auto-cleanup au prochain démarrage)
+                        roomRef.child('hostPresent').onDisconnect().set(false);
 
                         // Compte les spectateurs en temps réel
                         const spectatorsRef = roomRef.child('spectators');
@@ -594,7 +603,7 @@
                 }
                 if (hostRoomRef.current) {
                     try {
-                        hostRoomRef.current.onDisconnect().cancel();
+                        hostRoomRef.current.child('hostPresent').onDisconnect().cancel();
                         hostRoomRef.current.remove();
                     } catch(e){}
                     hostRoomRef.current = null;
